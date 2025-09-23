@@ -1,0 +1,58 @@
+; DSE Web Engine — CAOS stdlib (v0.12.0)
+; Purpose: stable CAOS definitions/scripts referenced by the HTML engine.
+; This file is loaded automatically if placed next to the HTML, or via "Load Stdlib".
+
+; --- Vendor toy harness ------------------------------------------------------
+; Classifier 2 0 0 = simple 'toy' agent (demo)
+scrp 2 0 0 10    ; Constructor
+  tick 4
+  log "Toy ctor: ticking"
+endm
+
+scrp 2 0 0 0     ; Deactivate
+  log "Toy deactivated"
+endm
+
+scrp 2 0 0 1     ; Activate1
+  log "Toy A1"
+  mesg writ ownr 9
+endm
+
+scrp 2 0 0 2     ; Activate2
+  log "Toy A2"
+endm
+
+scrp 2 0 0 3     ; Hit
+  log "Toy was hit"
+endm
+
+scrp 2 0 0 4     ; Pickup
+  log "Toy picked up"
+endm
+
+scrp 2 0 0 5     ; Drop
+  log "Toy dropped"
+endm
+
+scrp 2 0 0 9     ; Timer
+  addv va00 1
+  doif va00 >= 10
+    setv va00 0
+    log "Toy timer: cycle"
+  endi
+endm
+
+; --- Pointer mirror (UI scripts for A1/A2 on pointer, classifier-mirroring) --
+scrp 2 0 0 101   ; Pointer A1 (mirrors agent A1)
+  log "Pointer saw A1 for toy 2.0.0"
+endm
+
+scrp 2 0 0 102   ; Pointer A2
+  log "Pointer saw A2 for toy 2.0.0"
+endm
+
+; --- Utility: spawn a toy and set classifier ---------------------------------
+; Inject this block in console to spawn a demo toy from stdlib:
+;   new: simp 2 0 0
+;   clas 2 0 0
+;   tick 4

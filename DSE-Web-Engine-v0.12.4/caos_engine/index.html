@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>CAOS Engine (HTML/JS)</title>
+  <style>
+    body { font-family: sans-serif; margin: 1em; }
+    #log { white-space: pre-wrap; background: #f9f9f9; padding: 0.5em; }
+  </style>
+</head>
+<body>
+  <h1>CAOS Engine</h1>
+  <button id="reloadBtn">Reload Standard Library</button>
+  <input type="file" id="fileInput" accept=".cos" style="display:none;">
+  <div id="log"></div>
+
+  <script>
+    const logArea = document.getElementById('log');
+    const stdLibPath = 'caos_stdlib.cos';
+    let engine = {/* CAOS engine instance, assume global functions available */};
+
+    // Load the standard library .cos (programmatically or via file input)
+    async function loadStandardLibrary(file) {
+      try {
+        let text;
+        if (file) {
+          // User-provided .cos file content
+          text = await file.text();
+        } else {
+          const response = await fetch(stdLibPath);
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          text = await response.text();
+        }
+        engine.loadCAOSLibrary(text);  // Load CAOS stdlib definitions into engine
+        logArea.textContent = `✅ Loaded CAOS stdlib (${text.length} bytes)`;
+      } catch (err) {
+        logArea.textContent = `⚠️ Failed to load CAOS stdlib: ${err}`;
+      }
+    }
+
+    // Programmatic load on startup
+    loadStandardLibrary();  // Fetch external caos_stdlib.cos
+
+    // Hot-reload via button (re-fetch from server)
+    document.getElementById('reloadBtn').onclick = () => loadStandardLibrary();
+
+    // UI fallback: file input for manual .cos loading
+    document.getElementById('reloadBtn').addEventListener('contextmenu', e => {
+      e.preventDefault();
+      document.getElementById('fileInput').click();
+    });
+    document.getElementById('fileInput').onchange = e => {
+      const file = e.target.files[0];
+      if (file) loadStandardLibrary(file);
+    };
+  </script>
+</body>
+</html>

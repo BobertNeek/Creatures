@@ -1,0 +1,422 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>DSE-Web-Engine v0.12.7 — single file</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  :root{--bg:#0b1020;--card:#0c1326;--ink:#e5e7eb;--line:#1f2937;--btn:#0ea5e9}
+  html,body{margin:0;background:var(--bg);color:var(--ink);font:14px system-ui,-apple-system,Segoe UI,Roboto}
+  header{padding:12px 16px;border-bottom:1px solid var(--line);display:flex;gap:12px;align-items:center;background:#0a0f1e;position:sticky;top:0}
+  .tag{background:#172554;border:1px solid #1f2a59;padding:2px 8px;border-radius:999px;font-weight:700}
+  main{display:grid;grid-template-columns:420px 1fr;gap:12px;padding:12px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px}
+  .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  .btn{background:var(--btn);color:#03111f;border:none;font-weight:700;padding:8px 12px;border-radius:10px;cursor:pointer}
+  select,input,textarea{background:#0b1020;color:var(--ink);border:1px solid #1e293b;border-radius:8px;padding:6px 8px}
+  textarea{width:100%;min-height:140px}
+  #log,#caosLog{white-space:pre-wrap;background:#0b1020;border:1px solid var(--line);border-radius:12px;padding:10px;min-height:120px;max-height:260px;overflow:auto}
+  #world{position:relative;height:720px;background:#0b132b;border:1px solid #1e293b;border-radius:12px;overflow:hidden}
+  #bg,#stage{position:absolute;left:0;top:0;image-rendering:pixelated}
+</style>
+
+<header>
+  <strong>DSE-Web-Engine</strong><span class="tag">v0.12.7</span>
+  <span id="backendBadge" class="tag">CAOS: auto</span>
+</header>
+
+<main>
+  <aside class="card">
+    <h3>Assets</h3>
+    <div class="row">
+      <button class="btn" id="pickFS">Choose Docking Station folder</button>
+      <input id="pickInput" type="file" webkitdirectory multiple style="position:absolute;left:-9999px">
+      <button class="btn" id="pickFallback">Use fallback picker</button>
+      <span id="pickStatus"></span>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+      <div>
+        <h3>Background (.blk)</h3>
+        <div class="row">
+          <select id="bgList"></select>
+          <button class="btn" id="loadBg" disabled>Load</button>
+        </div>
+      </div>
+      <div>
+        <h3>Sprite (.c16/.s16)</h3>
+        <div class="row">
+          <select id="sprList"></select>
+          <button class="btn" id="spawnSprite" disabled>Spawn</button>
+        </div>
+      </div>
+    </div>
+
+    <h3>Agents</h3>
+    <div class="row">
+      <button class="btn" id="injectAgent">Inject .agent</button>
+      <input id="agentFile" type="file" accept=".agent,.agents">
+    </div>
+    <div class="row">
+      <button class="btn" id="runRemove" title="Run last agent's Remove script">Uninstall last</button>
+    </div>
+
+    <h3>CAOS</h3>
+    <div class="row">
+      <button class="btn" id="runBlk">Run Block</button>
+      <input id="cosFile" type="file" accept=".cos,.txt">
+    </div>
+    <textarea id="caos"></textarea>
+    <div id="caosLog"></div>
+
+    <h3>Log</h3>
+    <div id="log"></div>
+  </aside>
+
+  <section class="card">
+    <h3>World</h3>
+    <div id="world"><canvas id="bg"></canvas><canvas id="stage"></canvas></div>
+  </section>
+</main>
+
+<script type="module">
+const $=s=>document.querySelector(s);
+const log=m=>{ const el=$('#log'); el.textContent+=m+"\n"; el.scrollTop=el.scrollHeight };
+const clog=m=>{ const el=$('#caosLog'); el.textContent+=m+"\n"; el.scrollTop=el.scrollHeight };
+
+const world=$('#world'), bg=$('#bg'), stage=$('#stage'); 
+const bctx=bg.getContext('2d'), sctx=stage.getContext('2d');
+const resize=()=>{ bg.width=stage.width=world.clientWidth; bg.height=stage.clientHeight=world.clientHeight }; 
+addEventListener('resize',resize); setTimeout(resize,0);
+
+// Provider: DS folder (FS Access + webkitdirectory fallback)
+let provider=null;
+$('#pickFallback').onclick=()=>$('#pickInput').click();
+$('#pickInput').addEventListener('change', async ev=>{
+  const files=Array.from(ev.target.files||[]);
+  if(!files.length) return;
+  const map=new Map();
+  for(const f of files){ const key=(f.webkitRelativePath||f.name); map.set(key, f); }
+  provider={mode:'fallback', async listFiles(){return Array.from(map,([name,file])=>({name,file}))}, async getFile(ent){return ent.file}};
+  await indexAll(); $('#pickStatus').textContent='OK (fallback)';
+});
+
+$('#pickFS').onclick=async()=>{
+  if(!('showDirectoryPicker' in window)){ $('#pickStatus').textContent='No FS API'; return }
+  try{
+    const root=await window.showDirectoryPicker({mode:'read'});
+    async function* walk(d){ for await(const [n,h] of d.entries()){ if(h.kind==='directory'){ yield* walk(h) } else { yield [n,h] } } }
+    provider={mode:'fs', async listFiles(){ const out=[]; for await(const [n,h] of walk(root)){ out.append if needed } }, async getFile(ent){ return await ent.handle.getFile() }};
+  } catch(e){ $('#pickStatus').textContent='FAIL'; log('Picker error: '+e.message); }
+};
+
+// Fix provider.listFiles for FS API
+if(!provider){
+  // will be set after pickFS
+}
+async function indexAll(){
+  if(!provider){ log('No provider yet'); return; }
+  const entries=await provider.listFiles();
+  const sprites=new Map(), backgrounds=new Map();
+  for(const ent of entries){
+    const low=ent.name.toLowerCase();
+    if(low.endsWith('.blk')) backgrounds.set(ent.name.split('/').pop(),ent);
+    else if(low.endsWith('.c16')||low.endsWith('.s16')) sprites.set(ent.name.split('/').pop(),ent);
+  }
+  $('#bgList').innerHTML = Array.from(backgrounds.keys()).map(n=>`<option>${n}</option>`).join('');
+  $('#sprList').innerHTML = Array.from(sprites.keys()).map(n=>`<option>${n}</option>`).join('');
+  $('#loadBg').disabled=backgrounds.size===0; $('#spawnSprite').disabled=sprites.size===0;
+  window._store={sprites,backgrounds,provider};
+  log(`Indexed ${backgrounds.size} .blk and ${sprites.size} sprite(s). Mode=${provider.mode}`);
+}
+
+async function readArrayBuffer(ent){ 
+  const v=vfsGet(ent && ent.name ? ent.name.split('/').pop() : '');
+  if(v){ return v.buffer.slice(v.byteOffset, v.byteOffset+v.byteLength); }
+  const f=await (window._store?.provider.getFile(ent)); return await f.arrayBuffer(); 
+}
+
+// C16 / BLK decoders (same as earlier message)
+function toRGBA565(px){ const r=((px>>11)&31)*255/31, g=((px>>5)&63)*255/63, b=(px&31)*255/31; return [r|0,g|0,b|0,255] }
+function decodeC16(u8){
+  const dv=new DataView(u8.buffer,u8.byteOffset,u8.byteLength);
+  let p=0; dv.getUint32(p,true); p+=4;
+  const count=dv.getUint16(p,true); p+=2;
+  const headers=[];
+  for(let i=0;i<count;i++){
+    const off=dv.getUint32(p,true); p+=4;
+    const w=dv.getUint16(p,true); p+=2;
+    const h=dv.getUint16(p,true); p+=2;
+    for(let y=1;y<h;y++){ dv.getUint32(p,true); p+=4; }
+    headers.push({off,w,h});
+  }
+  const imgs=[];
+  for(const H of headers){
+    let q=H.off;
+    const id=new ImageData(H.w,H.h);
+    for(let y=0;y<H.h;y++){
+      let x=0;
+      for(;;){
+        const tag=dv.getUint16(q,true); q+=2;
+        if(tag===0) break;
+        const rt=tag&1, rl=tag>>1;
+        if(rt===1){
+          for(let i=0;i<rl;i++){
+            const px=dv.getUint16(q,true); q+=2;
+            const [r,g,b,a]=toRGBA565(px);
+            const j=(y*H.w+x+i)*4;
+            id.data[j]=r; id.data[j+1]=g; id.data[j+2]=b; id.data[j+3]=a;
+          }
+        } else {
+          for(let i=0;i<rl;i++){
+            const j=(y*H.w+x+i)*4; id.data[j+3]=0;
+          }
+        }
+        x+=rl;
+      }
+    }
+    imgs.push(id);
+  }
+  return imgs;
+}
+function decodeBLK(u8){
+  const dv=new DataView(u8.buffer,u8.byteOffset,u8.byteLength); let p=0;
+  dv.getUint32(p,true); p+=4; const bw=dv.getUint16(p,true); p+=2; const bh=dv.getUint16(p,true); p+=2; const num=dv.getUint16(p,true); p+=2;
+  const headers=[];
+  for(let i=0;i<num;i++){ const offMinus4=dv.getUint32(p,true); p+=4; const w=dv.getUint16(p,true); p+=2; const h=dv.getUint16(p,true); p+=2; headers.push({off:offMinus4+4,w,h}); }
+  const tiles=[];
+  for(const H of headers){
+    let q=H.off; const id=new ImageData(H.w,H.h);
+    for(let i=0;i<H.w*H.h;i++){ const px=dv.getUint16(q,true); q+=2; const [r,g,b,a]=toRGBA565(px); const j=i*4; id.data[j]=r; id.data[j+1]=g; id.data[j+2]=b; id.data[j+3]=a; }
+    tiles.push(id);
+  }
+  const tileW=headers[0]?.w||128, tileH=headers[0]?.h||128;
+  const cnv=document.createElement('canvas'); cnv.width=bw*tileW; cnv.height=bh*tileH; const c=cnv.getContext('2d'); let idx=0;
+  for(let cx=0;cx<bw;cx++){ for(let cy=0;cy<bh;cy++){ const t=tiles[idx++]; if(t) c.putImageData(t,cx*tileW,cy*tileH); } }
+  return cnv;
+}
+
+$('#loadBg').onclick=async()=>{ const name=$('#bgList').value; if(!name) return; const ent=window._store.backgrounds.get(name); const cnv=decodeBLK(new Uint8Array(await readArrayBuffer(ent))); bg.width=cnv.width; bg.height=cnv.height; bctx.clearRect(0,0,bg.width,bg.height); bctx.drawImage(cnv,0,0); };
+$('#spawnSprite').onclick=async()=>{
+  const name=$('#sprList').value; if(!name) return; const ent=window._store.sprites.get(name);
+  const frames=decodeC16(new Uint8Array(await readArrayBuffer(ent)));
+  const cx=(stage.width>>1)-((frames[0]?.width||64)>>1), cy=(stage.height>>1)-((frames[0]?.height||64)>>1);
+  if(frames[0]) sctx.putImageData(frames[0], cx, cy);
+};
+
+// VFS for injected FILE resources
+const VFS=new Map();
+function vfsGet(name){ return VFS.get(String(name||'').toLowerCase()) || null; }
+
+// PRAY container + tag parser (with zlib via DecompressionStream('deflate'))
+class PRAY{
+  constructor(buf){ this.view=new DataView(buf); this.buf=buf; this.blocks=[]; }
+  static td=new TextDecoder('utf-8');
+  nz(bytes){ let i=bytes.indexOf(0); if(i<0) i=bytes.length; return PRAY.td.decode(bytes.slice(0,i)); }
+  async inflate(u8){
+    if('DecompressionStream' in self){
+      try{
+        const ds=new DecompressionStream('deflate');
+        const r=new Response(new Blob([u8]).stream().pipeThrough(ds));
+        const ab=await r.arrayBuffer(); return new Uint8Array(ab);
+      }catch(_){}
+    }
+    return u8;
+  }
+  async parse(){
+    let p=0; if(PRAY.td.decode(new Uint8Array(this.buf,0,4))!=='PRAY') throw new Error('Not a PRAY file'); p+=4;
+    while(p<this.buf.byteLength){
+      const type=PRAY.td.decode(new Uint8Array(this.buf,p,4)); p+=4;
+      const name=this.nz(new Uint8Array(this.buf,p,128)); p+=128;
+      const len=this.view.getUint32(p,true); p+=4;
+      const ulen=this.view.getUint32(p,true); p+=4;
+      const flags=this.view.getUint32(p,true); p+=4;
+      let data=new Uint8Array(this.buf,p,len); p+=len;
+      if(flags&1){ data=await this.inflate(data); }
+      this.blocks.push({type,name,flags,ulen,len:data.length,data});
+    }
+    return this.blocks;
+  }
+  static readTagBlock(u8){
+    const v=new DataView(u8.buffer,u8.byteOffset,u8.byteLength); let p=0;
+    const u32=()=>{ const x=v.getUint32(p,true); p+=4; return x; };
+    const rd=(n)=> new TextDecoder().decode(u8.slice(p,p+n));
+    const ints={}, strs={};
+    const nI=u32(); for(let i=0;i<nI;i++){ const nlen=u32(); const key=rd(nlen); p+=nlen; const val=u32(); ints[key]=val; }
+    const nS=u32(); for(let i=0;i<nS;i++){ const nlen=u32(); const key=rd(nlen); p+=nlen; const vlen=u32(); const val=rd(vlen); p+=vlen; strs[key]=val; }
+    return {ints,strs};
+  }
+}
+
+// Minimal CAOS VM fallback (object-capable basics)
+class CaosVM {
+  constructor(){ this.reset(); }
+  reset(){ this.Scriptorium=new Map(); this.agents=new Map(); this.NEXT_ID=1; this.VM={targ:null,own:null,from:null,vars:Object.create(null),enumList:[],enumIdx:-1}; }
+  log(m){ clog('[vm] '+m); }
+  addAgent(x=100,y=100,w=48,h=48){ const id=this.NEXT_ID++; const a={id,x,y,w,h,tick:0,classifier:[2,0,0],frames:null,frameIdx:0}; this.agents.set(id,a); return a; }
+  clsKey(cls,ev){ return cls.join('.')+'.'+ev }
+  installScript(f,g,s,ev,ops){ this.Scriptorium.set(this.clsKey([f,g,s],ev),ops); this.log(`SCRP ${f}.${g}.${s}.${ev} (${ops.length})`) }
+  removeScript(f,g,s,ev){ this.Scriptorium.delete(this.clsKey([f,g,s],ev)); this.log(`RSCR ${f}.${g}.${s}.${ev}`) }
+  dispatch(agent,ev,p1=0,p2=0,from=null){
+    const [f,g,s]=agent.classifier; const keys=[this.clsKey([f,g,s],ev),this.clsKey([f,g,0],ev),this.clsKey([f,0,0],ev)];
+    let ops=null; for(const k of keys){ if(this.Scriptorium.has(k)){ ops=this.Scriptorium.get(k); break } }
+    if(!ops){ this.log(`No script for ${f}.${g}.${s}.${ev}`); return }
+    const P={targ:this.VM.targ,own:this.VM.own,from:this.VM.from}; this.VM.targ=agent; this.VM.own=agent; this.VM.from=from; this.run(ops); this.VM.targ=P.targ; this.VM.own=P.own; this.VM.from=P.from;
+  }
+  ensureTimer(a){ if(a._timer) return; a._timer=setInterval(()=>{ if(a.tick>0) this.dispatch(a,9) }, 500) }
+  asNum(x){ if(typeof x==='number') return x; if(typeof x==='string'&&/^[-]?\d+(\.\d+)?$/.test(x)) return Number(x); return 0 }
+  getVar(n){ return this.VM.vars[String(n).toLowerCase()]||0 }
+  setVar(n,v){ this.VM.vars[String(n).toLowerCase()]=v }
+  evalCond(tokens){
+    const v=(t)=>{ t=String(t||''); if(/^va\d\d$/i.test(t)||/^ov\d\d$/i.test(t))return this.getVar(t); if(t.toUpperCase()==='OWN')return this.VM.own?this.VM.own.id:0; if(t.toUpperCase()==='TARG')return this.VM.targ?this.VM.targ.id:0; if(/^[-]?\d+(\.\d+)?$/.test(t))return +t; return this.getVar(t); };
+    const c=(A,o,B)=>o=='='||o=='=='?A==B:o=='!='||o=='<>'?A!=B:o=='>'?A>B:o=='<'?A<B:o=='>='?A>=B:o=='<='?A<=B:false;
+    let i=0; let A=v(tokens[i++]); let o=tokens[i++]; let B=v(tokens[i++]); let r=c(A,o,B);
+    while(i<tokens.length){ const J=tokens[i++].toUpperCase(); const A2=v(tokens[i++]); const o2=tokens[i++]; const B2=v(tokens[i++]); const r2=c(A2,o2,B2); r=(J==='AND')?(r&&r2):(r||r2)} return r;
+  }
+  run(ops){ let ip=0; while(ip<ops.length){ const {op,args,elsePtr,endPtr}=ops[ip];
+    switch(op){
+      case 'LOG': clog(args.map(String).join(' ')); ip++; break;
+      case 'TARG': if((args[0]||'').toString().toUpperCase().startsWith('OWN')) this.VM.targ=this.VM.own; ip++; break;
+      case 'CLAS': if(this.VM.targ) this.VM.targ.classifier=[this.asNum(args[0]),this.asNum(args[1]),this.asNum(args[2])]; ip++; break;
+      case 'ATTR': if(this.VM.targ) this.VM.targ.attrs=this.asNum(args[0]); ip++; break;
+      case 'TICK': if(this.VM.targ){ this.VM.targ.tick=this.asNum(args[0]); this.ensureTimer(this.VM.targ);} ip++; break;
+      case 'POSE': if(this.VM.targ) this.VM.targ.frameIdx=this.asNum(args[0])|0; ip++; break;
+      case 'ANIM': if(this.VM.targ) this.VM.targ.frameIdx=this.asNum(args[0])|0; ip++; break;
+      case 'MVTO': if(this.VM.targ){ this.VM.targ.x=this.asNum(args[0]); this.VM.targ.y=this.asNum(args[1]); } ip++; break;
+      case 'MESG WRIT': { const dst=this._resolveAgent(args[0]); const ev=this.asNum(args[1])|0; if(dst) this.dispatch(dst,ev,this.asNum(args[2])|0,this.asNum(args[3])|0,this.VM.own); ip++; break; }
+      case 'MESG WRT+': { const dst=this._resolveAgent(args[0]); const ev=this.asNum(args[1])|0; const p1=this.asNum(args[2])|0,p2=this.asNum(args[3])|0,delay=this.asNum(args[4])|0; if(dst) setTimeout(()=>this.dispatch(dst,ev,p1,p2,this.VM.own), delay*100); ip++; break; }
+      case 'ENUM': { const f=this.asNum(args[0]),g=this.asNum(args[1]),s=this.asNum(args[2]); this.VM.enumList=Array.from(this.agents.values()).filter(o=>(f==o.classifier[0]||f<=0)&&(g==o.classifier[1]||g<=0)&&(s==o.classifier[2]||s<=0)).map(o=>o.id); this.VM.enumIdx=-1; ip++; break; }
+      case 'NEAR': { const r=this.asNum(args[0]); const tx=this.VM.targ?this.VM.targ.x:0, ty=this.VM.targ?this.VM.targ.y:0; this.VM.enumList=Array.from(this.agents.values()).filter(o=>Math.hypot(o.x-tx,o.y-ty)<=r).map(o=>o.id); this.VM.enumIdx=-1; ip++; break; }
+      case 'NEXT': { this.VM.enumIdx++; if(this.VM.enumIdx<this.VM.enumList.length){ this.VM.targ=this.agents.get(this.VM.enumList[this.VM.enumIdx])||this.VM.targ; } else { this.VM.targ=this.VM.own; } ip++; break; }
+      case 'SETV': this.setVar(args[0], this.asNum(args[1])); ip++; break;
+      case 'ADDV': this.setVar(args[0], this.getVar(args[0])+this.asNum(args[1])); ip++; break;
+      case 'SUBV': this.setVar(args[0], this.getVar(args[0])-this.asNum(args[1])); ip++; break;
+      case 'MULV': this.setVar(args[0], this.getVar(args[0])*this.asNum(args[1])); ip++; break;
+      case 'DIVV': this.setVar(args[0], Math.trunc(this.getVar(args[0])/(this.asNum(args[1])||1))); ip++; break;
+      case 'IF': { const ok=this.evalCond(args); ip = ok? ip+1 : (typeof elsePtr==='number'? elsePtr : endPtr); break; }
+      case 'ELSE': ip=endPtr; break;
+      case 'ENDI': ip++; break;
+      case 'NEW: SIMP': { const f=this.asNum(args[0]),g=this.asNum(args[1]),s=this.asNum(args[2]); const w=this.asNum(args[3])||64,h=this.asNum(args[4])||64; const obj=this.addAgent(140,140,w,h); obj.classifier=[f,g,s]; this.VM.own=obj; this.VM.targ=obj; ip++; break; }
+      case 'KILL': { if(this.VM.targ){ this.agents.delete(this.VM.targ.id); this.VM.targ=null; } ip++; break; }
+      default: clog('NYI '+op); ip++; break;
+    } } }
+  _resolveAgent(spec){ if(!spec) return this.VM.targ; const s=spec.toString().toUpperCase(); if(s==='OWN'||s==='OWNR') return this.VM.own; if(s==='TARG') return this.VM.targ; const id=this.asNum(spec); return this.agents.get(id)||null; }
+}
+function tokenize(text){
+  const lines=text.split(/\r?\n/); const toks=[];
+  for(const raw of lines){
+    const line=raw.replace(/;.*/,'').trim(); if(!line) continue;
+    const parts=[]; let i=0;
+    while(i<line.length){
+      const ch=line[i]; if(/\s/.test(ch)){ i++; continue }
+      if(ch=='"'){ let j=i+1, s=''; while(j<line.length && line[j] != '"'){ s+=line[j++] } parts.push(s); i=j+1; continue }
+      let j=i; while(j<line.length && !/\s/.test(line[j])) j++; parts.push(line.slice(i,j)); i=j;
+    }
+    toks.push(parts);
+  }
+  return toks;
+}
+function parseOps(toks, vm){
+  const ops=[]; let scrp=null; const ifStack=[];
+  const push=(op,args)=>{ const rec={op,args}; if(scrp) scrp.ops.push(rec); else ops.push(rec); return rec; }
+  const cur=()=> scrp? scrp.ops : ops;
+  for(const ts of toks){
+    const head=(ts[0]||'').toUpperCase(); const args=ts.slice(1);
+    if(head==='SCRP'){ if(scrp) vm.installScript(scrp.f,scrp.g,scrp.s,scrp.ev,scrp.ops); scrp={f:+args[0],g:+args[1],s:+args[2],ev:+args[3],ops:[]}; continue }
+    if(head==='ENDM'){ if(scrp){ vm.installScript(scrp.f,scrp.g,scrp.s,scrp.ev,scrp.ops); scrp=null; } continue }
+    if(head==='RSCR'){ vm.removeScript(+args[0],+args[1],+args[2],+args[3]); continue }
+    if(head==='DOIF'){ const list=cur(); const rec=push('IF', args); rec.elsePtr=-1; rec.endPtr=-1; ifStack.push({list,idx:list.length-1}); continue }
+    if(head==='ELSE'){ if(ifStack.length){ const top=ifStack[top=ifStack.length-1]; const list=top.list; const idx=list.length; list[top.idx].elsePtr=idx+1; const r=push('ELSE', []); r.endPtr=-1; } continue }
+    if(head==='ENDI'){ if(ifStack.length){ const top=ifStack.pop(); const list=top.list; const idx=list.length; list[top.idx].endPtr=idx+1; const prev=list[idx-1]; if(prev && prev.op==='ELSE') prev.endPtr=idx+1; push('ENDI', []);} continue }
+    switch(head){
+      case 'LOG': push('LOG', args); break;
+      case 'TARG': push('TARG', args); break;
+      case 'CLAS': push('CLAS', [ +args[0], +args[1], +args[2] ]); break;
+      case 'ATTR': push('ATTR', [ +args[0] ]); break;
+      case 'TICK': push('TICK', [ +args[0] ]); break;
+      case 'POSE': push('POSE', [ +args[0] ]); break;
+      case 'ANIM': push('ANIM', [ +args[0] ]); break;
+      case 'MVTO': push('MVTO', [ +args[0], +args[1] ]); break;
+      case 'MESG':
+        if((args[0]||'').toUpperCase()==='WRIT'){ push('MESG WRIT', [ args[1]||'TARG', +(args[2]||0), +(args[3]||0), +(args[4]||0) ]); }
+        else if((args[0]||'').toUpperCase()==='WRT+'){ push('MESG WRT+', [ args[1]||'TARG', +(args[2]||0), +(args[3]||0), +(args[4]||0), +(args[5]||0) ]); }
+        break;
+      case 'ENUM': push('ENUM', [ +args[0], +args[1], +args[2] ]); break;
+      case 'NEAR': push('NEAR', [ +args[0] ]); break;
+      case 'NEXT': push('NEXT', []); break;
+      case 'SETV': push('SETV', [ args[0], +args[1] ]); break;
+      case 'ADDV': push('ADDV', [ args[0], +args[1] ]); break;
+      case 'SUBV': push('SUBV', [ args[0], +args[1] ]); break;
+      case 'MULV': push('MULV', [ args[0], +args[1] ]); break;
+      case 'DIVV': push('DIVV', [ args[0], +args[1] ]); break;
+      case 'NEW:':
+        if((args[0]||'').toUpperCase()==='SIMP'){ push('NEW: SIMP', [ +(args[1]||2), +(args[2]||0), +(args[3]||0), +(args[4]||64), +(args[5]||64) ]); }
+        break;
+      case 'KILL': push('KILL', []); break;
+      default: push('LOG',['NYI', head, ...args]); break;
+    }
+  }
+  if(scrp) vm.installScript(scrp.f,scrp.g,scrp.s,scrp.ev,scrp.ops);
+  return ops;
+}
+
+const fallbackVM=new CaosVM();
+async function caosRun(text){
+  try{
+    if(window.caosReady){
+      const rt = await window.caosReady;
+      if(rt && typeof rt.exec==='function'){ return rt.exec(text); }
+    }
+  }catch(e){}
+  const ops=parseOps(tokenize(text), fallbackVM);
+  if(ops.length) fallbackVM.run(ops);
+}
+window.caosRun = caosRun;
+
+// Agent injector UI
+$('#injectAgent').onclick=()=>$('#agentFile').click();
+$('#agentFile').addEventListener('change', async ev=>{
+  const f=ev.target.files && ev.target.files[0];
+  if(!f) return;
+  try{
+    const buf=await f.arrayBuffer();
+    const pray=new PRAY(buf);
+    await pray.parse();
+    for(const b of pray.blocks){ if(b.type==='FILE'){ VFS.set(b.name.toLowerCase(), b.data); } }
+    clog(`Mounted ${Array.from(VFS.keys()).length} FILE resources from ${f.name}`);
+    const tags=pray.blocks.filter(b=>b.type==='AGNT'||b.type==='DSAG');
+    let ran=0;
+    for(const tb of tags){
+      const t=PRAY.readTagBlock(tb.data);
+      const count=(t.ints&&t.ints['Script Count'])||0;
+      for(let i=1;i<=count;i++){ const key='Script '+i; if(t.strs && t.strs[key]){ await caosRun(t.strs[key]); ran++; } }
+      if(t.strs && t.strs['Remove script']) window.lastAgentRemoveScript=t.strs['Remove script'];
+    }
+    clog(`Injected ${ran} script(s) from ${tags.length} agent block(s).`);
+  }catch(e){ clog('Inject error: '+e.message); }
+});
+
+$('#runRemove').onclick=async()=>{
+  if(window.lastAgentRemoveScript){ await caosRun(window.lastAgentRemoveScript); clog('Ran Remove script.'); } else { clog('No Remove script remembered.'); }
+};
+
+// External engine bridge (auto-attach ./caos_engine/* if present)
+(async function bridge(){
+  try{
+    const base = new URL('./caos_engine/', location.href);
+    const tryPaths = ['engine_core.js','engine_core.mjs','index.js','main.js'];
+    let mod=null;
+    for(const p of tryPaths){ try{ mod = await import(base.href + p); break }catch(_){ } }
+    const badge=document.querySelector('#backendBadge');
+    if(mod){
+      if(badge) badge.textContent='CAOS: external';
+      window.caosReady = Promise.resolve({
+        mod,
+        exec: (typeof mod.exec==='function') ? (t)=>mod.exec(t) :
+              (mod.backend && typeof mod.backend.exec==='function') ? (t)=>mod.backend.exec(t) : null
+      });
+      clog('External CAOS engine attached.');
+    } else {
+      if(badge) badge.textContent='CAOS: fallback';
+    }
+  }catch(e){ const badge=document.querySelector('#backendBadge'); if(badge) badge.textContent='CAOS: fallback'; }
+})();
+</script>

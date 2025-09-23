@@ -1,0 +1,396 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8"/>
+<title>DSE Web Engine v0.10.1 — BLK + C16/S16 + ATT (robust folder access)</title>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<style>
+body{margin:0;background:#0b1020;color:#e5e7eb;font:14px/1.45 system-ui,Segoe UI,Roboto,Arial}
+header{padding:12px 16px;display:flex;gap:12px;align-items:center;background:#0a0f1e;border-bottom:1px solid #1f2937;position:sticky;top:0;z-index:10}
+.badge{font-size:12px;padding:2px 8px;border-radius:999px;background:#172554;color:#93c5fd;border:1px solid #1e3a8a}
+main{display:grid;grid-template-columns:480px 1fr;gap:12px;padding:12px}
+.card{background:#0c1326;border:1px solid #1f2937;border-radius:14px;padding:12px}
+h2{font-size:16px;margin:0 0 8px 0;color:#cbd5e1}
+.btn{background:#0ea5e9;color:#03111f;border:none;font-weight:700;padding:8px 12px;border-radius:10px;cursor:pointer}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+.row{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.pill{display:inline-block;padding:2px 8px;border-radius:999px;border:1px solid #334155;color:#93c5fd}
+.ok{color:#22c55e}.warn{color:#f59e0b}.bad{color:#ef4444}
+.log{white-space:pre-wrap;background:#0b1020;border:1px solid #1f2937;border-radius:12px;padding:10px;min-height:140px;max-height:320px;overflow:auto}
+.small{font-size:12px;color:#93a1b1}
+select,input[type=number],input[type=text]{background:#0b1020;color:#e5e7eb;border:1px solid #1e293b;border-radius:8px;padding:6px 8px}
+#world{position:relative;width:100%;height:720px;background:#0b132b;border:1px solid #1e293b;border-radius:12px;overflow:hidden}
+#bg{position:absolute;left:0;top:0;image-rendering:pixelated}
+#grid{position:absolute;left:0;top:0;image-rendering:pixelated}
+#stage{position:absolute;left:0;top:0;image-rendering:pixelated}
+.agent{position:absolute;user-select:none;cursor:pointer}
+.agent .box{position:absolute;border:1px dashed #64748b;inset:0;pointer-events:none}
+fieldset{border:1px solid #1f2937;border-radius:10px;padding:8px}
+legend{font-size:12px;color:#93a1b1}
+.hidden{display:none}
+</style>
+</head>
+<body>
+<header>
+  <div>DSE Web Engine</div>
+  <span class="badge">v0.10.1</span>
+  <span class="small">Robust folder access • BLK • C16/S16 • ATT</span>
+</header>
+
+<main>
+  <aside class="card">
+    <h2>Assets</h2>
+    <div class="row">
+      <button class="btn" id="pickFS">Choose Docking Station Folder</button>
+      <input id="pickInput" class="hidden" type="file" webkitdirectory multiple />
+      <button class="btn" id="pickFallback">Use Fallback Picker</button>
+      <span id="pickStatus" class="pill">—</span>
+    </div>
+    <div class="small" id="contextHint"></div>
+
+    <h2 style="margin-top:10px">Background (.blk)</h2>
+    <div class="row">
+      <select id="bgList"></select>
+      <button class="btn" id="loadBg" disabled>Load Background</button>
+      <span id="bgStatus" class="pill">—</span>
+    </div>
+
+    <h2 style="margin-top:10px">Sprite (.c16/.s16)</h2>
+    <div class="row">
+      <select id="sprList"></select>
+      <button class="btn" id="spawnSprite" disabled>Spawn Sprite</button>
+      <span id="sprStatus" class="pill">—</span>
+    </div>
+
+    <h2 style="margin-top:10px">Norn Composer (.att + sprites)</h2>
+    <fieldset>
+      <legend>Breed Codes</legend>
+      <div class="row">
+        <label>Species/Gender
+          <select id="sg">
+            <option value="0">0 Male Norn</option>
+            <option value="4">4 Female Norn</option>
+            <option value="1">1 Male Grendel</option>
+            <option value="5">5 Female Grendel</option>
+            <option value="2">2 Male Ettin</option>
+            <option value="6">6 Female Ettin</option>
+            <option value="3">3 Male Geat</option>
+            <option value="7">7 Female Geat</option>
+          </select>
+        </label>
+        <label>Stage
+          <select id="stageSel">
+            <option value="0">0 Baby</option>
+            <option value="1">1 Child</option>
+            <option value="2">2 Adolescent</option>
+            <option value="3">3 Youth</option>
+            <option value="4" selected>4 Adult</option>
+            <option value="5">5 Aged</option>
+            <option value="6">6 Senior</option>
+          </select>
+        </label>
+        <label>Breed Slot <input id="breed" value="a" size="2" maxlength="1"/></label>
+      </div>
+      <div class="row">
+        <label>Pose <input type="number" id="pose" value="0" min="0" max="15" style="width:64px"/></label>
+        <button class="btn" id="buildNorn" disabled>Build Norn</button>
+        <span id="nornStatus" class="pill">—</span>
+      </div>
+    </fieldset>
+
+    <h2 style="margin-top:10px">Logs</h2>
+    <div id="log" class="log"></div>
+  </aside>
+
+  <section class="card">
+    <h2>World</h2>
+    <div id="world">
+      <canvas id="bg"></canvas>
+      <canvas id="grid"></canvas>
+      <canvas id="stage"></canvas>
+    </div>
+  </section>
+</main>
+
+<script>
+const $ = s=>document.querySelector(s);
+const log = m=>{ const el=$('#log'); el.textContent += m + "\\n"; el.scrollTop=el.scrollHeight; };
+
+// canvases
+const world = $('#world');
+const bg = $('#bg'); const bctx = bg.getContext('2d', { willReadFrequently:true });
+const grid = $('#grid'); const gctx = grid.getContext('2d', { willReadFrequently:true });
+const stage = $('#stage'); const sctx = stage.getContext('2d', { willReadFrequently:true, alpha:true });
+function resize(){ bg.width=grid.width=stage.width=world.clientWidth; bg.height=grid.height=stage.clientHeight||world.clientHeight; drawGrid(); }
+function drawGrid(){ gctx.clearRect(0,0,grid.width,grid.height); gctx.strokeStyle='#18233d';
+  for(let x=0;x<grid.width;x+=32){gctx.beginPath();gctx.moveTo(x,0);gctx.lineTo(x,grid.height);gctx.stroke();}
+  for(let y=0;y<grid.height;y+=32){gctx.beginPath();gctx.moveTo(0,y);gctx.lineTo(grid.width,y);gctx.stroke();}
+}
+addEventListener('resize', resize); setTimeout(resize,0);
+
+// --- Directory providers (FSAccess vs Fallback) ---
+let provider = null; // {mode: 'fs'|'fallback', listFiles(), getFile(path)}
+
+const store = {
+  sprites: new Map(),      // name -> {path, file}
+  backgrounds: new Map(),  // name -> {path, file}
+  bodydata: new Map(),     // name -> {path, file}
+};
+
+function clearStore(){
+  store.sprites.clear(); store.backgrounds.clear(); store.bodydata.clear();
+  $('#bgList').innerHTML = ''; $('#sprList').innerHTML='';
+  $('#loadBg').disabled = true; $('#spawnSprite').disabled = true; $('#buildNorn').disabled = true;
+}
+
+function addToSelect(sel, keys){
+  sel.innerHTML=''; keys.sort().forEach(n=>{ const o=document.createElement('option'); o.value=o.textContent=n; sel.appendChild(o); });
+}
+
+function setPickStatus(txt, cls){ const ps=$('#pickStatus'); ps.textContent=txt; ps.className='pill'; if(cls) ps.classList.add(cls); }
+
+// Primary: File System Access API
+const supportsFS = 'showDirectoryPicker' in window;
+$('#contextHint').textContent = (supportsFS? 'Directory picker available.' : 'Directory picker not available in this browser; use fallback.' )
+ + (window.isSecureContext? '' : ' This page is not in a secure context; some browsers will block directory access.');
+
+async function pickFS(){
+  if(!supportsFS){ log('FSAccess not supported; use fallback.'); setPickStatus('No API','bad'); return; }
+  try{
+    const handle = await window.showDirectoryPicker({ mode:'read' }); // requires user activation
+    provider = await makeFSProvider(handle);
+    await indexAll();
+    setPickStatus('OK','ok');
+  }catch(e){
+    log('showDirectoryPicker error: '+ (e && e.message ? e.message : e));
+    if (e && (e.name==='SecurityError' || /secure/i.test(String(e)))) {
+      log('Security error — your browser may require HTTPS/localhost. Use the fallback picker.');
+    }
+    setPickStatus('FAIL','bad');
+  }
+}
+
+async function makeFSProvider(rootHandle){
+  async function* walk(dir){
+    for await (const [name, handle] of dir.entries()){
+      if(handle.kind==='directory'){ yield* walk(handle); }
+      else { yield [name, handle]; }
+    }
+  }
+  return {
+    mode:'fs',
+    async listFiles(){
+      const out=[];
+      for await (const [name, handle] of walk(rootHandle)){
+        out.push({name, handle});
+      }
+      return out;
+    },
+    async getFile(entry){ const f = await entry.handle.getFile(); return f; }
+  };
+}
+
+// Fallback: <input type="file" webkitdirectory multiple>
+document.getElementById('pickFallback').onclick = ()=> document.getElementById('pickInput').click();
+document.getElementById('pickInput').addEventListener('change', async (ev)=>{
+  const files = Array.from(ev.target.files||[]);
+  if(files.length===0){ log('No files selected.'); setPickStatus('—'); return; }
+  provider = makeFallbackProvider(files);
+  await indexAll();
+  setPickStatus('OK (fallback)','ok');
+});
+document.getElementById('pickFS').onclick = pickFS;
+
+function makeFallbackProvider(files){
+  // files: File[] with webkitRelativePath preserved in Chromium
+  const map = new Map();
+  for(const f of files){
+    const k = f.webkitRelativePath || f.name;
+    map.set(k, f);
+  }
+  return {
+    mode:'fallback',
+    async listFiles(){ return Array.from(map, ([name,file]) => ({name, file})); },
+    async getFile(entry){ return entry.file; }
+  };
+}
+
+// Indexing
+function nameOf(path){
+  return path.split('/').pop();
+}
+
+async function indexAll(){
+  clearStore();
+  const entries = await provider.listFiles();
+  let nB=0, nS=0, nA=0;
+  for(const ent of entries){
+    const low = ent.name.toLowerCase();
+    if(low.endsWith('.blk')){ store.backgrounds.set(nameOf(ent.name), ent); nB++; }
+    else if(low.endsWith('.c16')||low.endsWith('.s16')){ store.sprites.set(nameOf(ent.name), ent); nS++; }
+    else if(low.endsWith('.att')){ store.bodydata.set(nameOf(ent.name), ent); nA++; }
+  }
+  addToSelect($('#bgList'), Array.from(store.backgrounds.keys()));
+  addToSelect($('#sprList'), Array.from(store.sprites.keys()));
+  $('#loadBg').disabled = store.backgrounds.size===0;
+  $('#spawnSprite').disabled = store.sprites.size===0;
+  $('#buildNorn').disabled = (store.sprites.size===0 || store.bodydata.size===0);
+  log(`Indexed ${nB} .blk, ${nS} sprite(s), ${nA} .att file(s). Mode=${provider.mode}`);
+}
+
+// helpers: read file into ArrayBuffer or text
+async function readArrayBuffer(ent){ const f = await provider.getFile(ent); return await f.arrayBuffer(); }
+async function readText(ent){ const f = await provider.getFile(ent); return await f.text(); }
+
+// pixel unpackers
+function toRGBA555(px){ const r=((px>>10)&31)*255/31, g=((px>>5)&31)*255/31, b=(px&31)*255/31; return [r|0,g|0,b|0,255]; }
+function toRGBA565(px){ const r=((px>>11)&31)*255/31, g=((px>>5)&63)*255/63, b=(px&31)*255/31; return [r|0,g|0,b|0,255]; }
+
+// S16 decode
+function decodeS16(u8){
+  const dv=new DataView(u8.buffer,u8.byteOffset,u8.byteLength); let p=0;
+  const fmt=dv.getUint32(p,true); p+=4; const pix = (fmt===0)? toRGBA555 : (fmt===1)? toRGBA565 : toRGBA565;
+  const count=dv.getUint16(p,true); p+=2; const headers=[];
+  for(let i=0;i<count;i++){ const off=dv.getUint32(p,true); p+=4; const w=dv.getUint16(p,true); p+=2; const h=dv.getUint16(p,true); p+=2; headers.push({off,w,h}); }
+  const imgs=[]; for(const H of headers){ let q=H.off; const id=new ImageData(H.w,H.h);
+    for(let i=0;i<H.w*H.h;i++){ const px=dv.getUint16(q,true); q+=2; const [r,g,b,a]=pix(px); const j=i*4; id.data[j]=r; id.data[j+1]=g; id.data[j+2]=b; id.data[j+3]=a; }
+    imgs.push(id); } return imgs;
+}
+
+// C16 decode
+function decodeC16(u8){
+  const dv=new DataView(u8.buffer,u8.byteOffset,u8.byteLength); let p=0;
+  const fmt=dv.getUint32(p,true); p+=4; const pix = (fmt===2)? toRGBA555 : (fmt===3)? toRGBA565 : toRGBA565;
+  const count=dv.getUint16(p,true); p+=2; const headers=[];
+  for(let i=0;i<count;i++){
+    const off=dv.getUint32(p,true); p+=4; const w=dv.getUint16(p,true); p+=2; const h=dv.getUint16(p,true); p+=2;
+    for(let y=1;y<h;y++){ /* skip line offsets if present */ dv.getUint32(p,true); p+=4; }
+    headers.push({off,w,h});
+  }
+  const imgs=[];
+  for(const H of headers){
+    let q=H.off; const id=new ImageData(H.w,H.h);
+    for(let y=0;y<H.h;y++){
+      let x=0;
+      for(;;){
+        const tag=dv.getUint16(q,true); q+=2;
+        if(tag===0) break; // EOL
+        const runType = tag & 1;
+        const runLen  = tag >> 1;
+        if(runType===1){
+          for(let i=0;i<runLen;i++){
+            const px=dv.getUint16(q,true); q+=2; const [r,g,b,a]=pix(px);
+            const j=(y*H.w + x + i)*4; id.data[j]=r; id.data[j+1]=g; id.data[j+2]=b; id.data[j+3]=a;
+          }
+        }else{
+          for(let i=0;i<runLen;i++){ const j=(y*H.w + x + i)*4; id.data[j+3]=0; }
+        }
+        x += runLen;
+      }
+    }
+    imgs.push(id);
+  }
+  return imgs;
+}
+
+// BLK decode
+function decodeBLK(u8){
+  const dv=new DataView(u8.buffer,u8.byteOffset,u8.byteLength); let p=0;
+  const fmt=dv.getUint32(p,true); p+=4; const pix=(fmt===0)?toRGBA555:toRGBA565;
+  const bw=dv.getUint16(p,true); p+=2; const bh=dv.getUint16(p,true); p+=2; const num=dv.getUint16(p,true); p+=2;
+  const headers=[]; for(let i=0;i<num;i++){ const offMinus4=dv.getUint32(p,true); p+=4; const w=dv.getUint16(p,true); p+=2; const h=dv.getUint16(p,true); p+=2; headers.push({off:offMinus4+4,w,h}); }
+  const tiles=[]; for(const H of headers){ let q=H.off; const id=new ImageData(H.w,H.h);
+    for(let i=0;i<H.w*H.h;i++){ const px=dv.getUint16(q,true); q+=2; const [r,g,b,a]=toRGBA565(px); const j=i*4; id.data[j]=r; id.data[j+1]=g; id.data[j+2]=b; id.data[j+3]=a; } tiles.push(id); }
+  const tileW=headers[0]?.w||128, tileH=headers[0]?.h||128; const bigW=bw*tileW, bigH=bh*tileH;
+  const cnv=document.createElement('canvas'); cnv.width=bigW; cnv.height=bigH; const c=cnv.getContext('2d');
+  let idx=0; for(let cx=0;cx<bw;cx++){ for(let cy=0;cy<bh;cy++){ const t=tiles[idx++]; if(t) c.putImageData(t, cx*tileW, cy*tileH); } }
+  return cnv;
+}
+
+// Background UI
+$('#loadBg').onclick = async ()=>{
+  const name = $('#bgList').value; if(!name){ alert('Pick a .blk'); return; }
+  const ent = store.backgrounds.get(name);
+  const buf = await readArrayBuffer(ent);
+  const cnv = decodeBLK(new Uint8Array(buf));
+  bg.width = cnv.width; bg.height = cnv.height;
+  bctx.clearRect(0,0,bg.width,bg.height); bctx.drawImage(cnv,0,0);
+  $('#bgStatus').textContent='PASS'; $('#bgStatus').classList.add('ok');
+  log(`Background loaded: ${name} (${bg.width}×${bg.height})`);
+};
+
+// Sprite demo
+let NEXT_ID=1; const agents = new Map();
+function place(a){ a.el.style.left=a.x+'px'; a.el.style.top=a.y+'px'; }
+function addAgent(x,y,w,h){
+  const id=NEXT_ID++; const el=document.createElement('div'); el.className='agent';
+  el.style.left=x+'px'; el.style.top=y+'px'; el.style.width=w+'px'; el.style.height=h+'px';
+  const box=document.createElement('div'); box.className='box'; el.appendChild(box); world.appendChild(el);
+  const a={id,el,x,y,w,h,held:false}; agents.set(id,a);
+  el.addEventListener('mousedown', e=>{a.held=true; a.hx=e.offsetX; a.hy=e.offsetY;});
+  addEventListener('mousemove', e=>{ if(!a.held) return; const r=world.getBoundingClientRect(); a.x=e.clientX-r.left-a.hx; a.y=e.clientY-r.top-a.hy; place(a); });
+  addEventListener('mouseup', ()=>{ if(!a.held) return; a.held=false; });
+  place(a); return a;
+}
+
+function pickDecoder(u8){
+  const dv=new DataView(u8.buffer,u8.byteOffset,u8.byteLength); const sig=dv.getUint32(0,true);
+  if(sig===2 || sig===3) return decodeC16(u8);
+  if(sig===0 || sig===1) return decodeS16(u8);
+  throw new Error('Unknown sprite signature: '+sig);
+}
+
+$('#spawnSprite').onclick = async ()=>{
+  const name = $('#sprList').value; if(!name){ alert('Pick a .c16/.s16'); return; }
+  const ent = store.sprites.get(name);
+  try{
+    const frames = pickDecoder(new Uint8Array(await readArrayBuffer(ent)));
+    const w=frames[0].width, h=frames[0].height;
+    const a = addAgent(80,80,w,h);
+    let i=0; const cnv=document.createElement('canvas'); cnv.width=w; cnv.height=h; const c=cnv.getContext('2d');
+    function step(){ c.putImageData(frames[i%frames.length],0,0); a.el.style.background=`url(${cnv.toDataURL()})`; a.el.style.backgroundSize='cover'; i++; }
+    step(); a.timer=setInterval(step, 160);
+    $('#sprStatus').textContent='PASS'; $('#sprStatus').classList.add('ok');
+    log(`Spawned sprite ${name} with ${frames.length} frame(s).`);
+  }catch(err){ log('Sprite load error: '+err.message); $('#sprStatus').textContent='FAIL'; $('#sprStatus').classList.add('bad'); }
+};
+
+// ATT + Composer
+const spriteCache = new Map();
+const attCache = new Map();
+function code(part, sg, stage, breed){ return (part + String(sg) + String(breed)).toLowerCase().replace(/[^a-z0-9]/g,'') + String(stage); } // minor normalization
+async function loadFramesFor(base){
+  if(spriteCache.has(base)) return spriteCache.get(base);
+  const variants=[base+'.c16', base+'.C16', base+'.s16', base+'.S16'];
+  let ent=null;
+  for(const k of variants){ if(store.sprites.has(k)) { ent=store.sprites.get(k); break; } }
+  if(!ent){
+    for(const k of store.sprites.keys()){ if(k.toLowerCase().startswith(base.toLowerCase())) { ent=store.sprites.get(k); break; } }
+  }
+  if(!ent) throw new Error('Missing sprite '+base+'.c16/.s16');
+  const frames = pickDecoder(new Uint8Array(await readArrayBuffer(ent)));
+  spriteCache.set(base, frames); return frames;
+}
+async function loadATT(base){
+  if(attCache.has(base)) return attCache.get(base);
+  const name = base + '.att';
+  let ent = store.bodydata.get(name) || store.bodydata.get(name.toUpperCase());
+  if(!ent){
+    for(const k of store.bodydata.keys()){ if(k.toLowerCase()===name.toLowerCase()){ ent=store.bodydata.get(k); break; } }
+  }
+  if(!ent) throw new Error('Missing ATT '+name);
+  const rows = (await readText(ent)).split(/\r?\n/).map(l=>l.trim()).filter(l=>l && !l.startsWith('#')).map(l=>l.split(/\s+/).map(n=>parseInt(n,10)));
+  attCache.set(base, rows); return rows;
+}
+
+function blit(img, x, y){ const cnv=document.createElement('canvas'); cnv.width=img.width; cnv.height=img.height; const c=cnv.getContext('2d'); c.putImageData(img,0,0); stage.getContext('2d').drawImage(cnv, x|0, y|0); }
+
+async function composeNorn(sg, stageIdx, breed, poseIdx){
+  stage.getContext('2d').clearRect(0,0,stage.width,stage.height);
+  const cx = (stage.width/2)|0, cy = (stage.height*0.65)|0;
+
+  const bodyBase = f"b{sg}{stageIdx}{breed}".lower() if False else 'b'+String(sg)+String(stageIdx)+String(breed); // placeholder: left as JS concatenation below
+}
+</script>
+</body>
+</html>
